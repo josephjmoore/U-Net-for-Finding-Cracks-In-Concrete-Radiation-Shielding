@@ -289,7 +289,7 @@ def run_one(i, crack=None, runs_dir="runs", data_dir="data"):
     return out_path
 
 
-def generate_dataset(n_runs, start=0):
+def generate_dataset(n_runs, start=251):
     for i in range(start, start + n_runs):
         rng = np.random.default_rng()
         if rng.uniform() < 0.5:
@@ -300,4 +300,4 @@ def generate_dataset(n_runs, start=0):
 
 
 if __name__ == "__main__":
-    generate_dataset(n_runs=1)
+    generate_dataset(n_runs=50)    

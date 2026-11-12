@@ -133,9 +133,10 @@ def plot_maps(npz, crack, run_id):
 
 
 def main():
-    run_id = int(sys.argv[1]) if len(sys.argv) > 1 else 0
-    run_dir = Path(RUNS_DIR) / f"run_{run_id:05d}"
-    npz = np.load(Path(DATA_DIR) / f"run_{run_id:05d}.npz")
+    run_id = 74
+    run_name = f"run_{run_id:05d}"
+    run_dir = Path(RUNS_DIR) / run_name
+    npz = np.load(Path(DATA_DIR) / f"{run_name}.npz")
     crack = load_crack(npz)
 
     plot_geometry(load_model(run_dir), crack, run_id)

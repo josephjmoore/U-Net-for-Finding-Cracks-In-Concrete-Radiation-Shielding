@@ -10,6 +10,9 @@ requires-python = ">=3.12"
 dependencies = [
     "matplotlib>=3.11.2",
     "openmc-anywhere>=0.16.0.0",
+    "scikit-learn>=1.9.1",
+    "torch>=2.15.0",
+    "torchvision>=0.29.2",
 ]
 
 [project.scripts]
