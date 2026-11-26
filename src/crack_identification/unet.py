@@ -28,23 +28,35 @@ batch_size = 16
 learning_rate = 0.001
 noise_std = 0.2
 POS_WEIGHT = 50.0           # BCE weight on crack pixels
-data_dir = os.environ.get('DATA_DIR', 'data')
-out_csv = os.environ.get('OUT_CSV', 'crack_params_unet.csv')
-PARAM_NAMES = ['x', 'y', 'width', 'length', 'depth', 'phi']   # columns of the TRUE params 
+# Paths are anchored to the repo root (two levels above this file), so the script
+# works no matter which folder it is launched from.
+REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+data_dir = os.environ.get('DATA_DIR', os.path.join(REPO_ROOT, 'data'))
+out_csv = os.environ.get('OUT_CSV', os.path.join(REPO_ROOT, 'crack_params_unet.csv'))
+PARAM_NAMES = ['x', 'y', 'width', 'length', 'depth', 'phi']   # columns of the TRUE params
 PRED_NAMES = ['x', 'y', 'length', 'phi'] # model unable to predict width or depth yet
 PRED_COLS = [PARAM_NAMES.index(n) for n in PRED_NAMES]       # [0, 1, 3, 5]: where each sits in params
 
 TRAIN = False                # True: train and save the models. False: load the saved models and just measure.
+                             # WARNING: True overwrites the files at MODEL_PATH (your current best ensemble).
 
 THRESHOLD = 0.5 #strict mask -> centre (x, y), angle (phi), width.
-LENGTH_THRESHOLD = 0.15 # looser mask -> length only.
+LENGTH_THRESHOLD = 0.25 # looser mask -> length only.
 
 EVAL_ON = 'test'             # 'val' while comparing settings; 'test' once, for the final score
+
+# Detection ("is there a crack at all?") is a separate decision from THRESHOLD, which
+# only decides which pixels belong to the crack when measuring it. A wall is called
+# cracked if crack_score > a cut-off, and the cut-off is chosen on the CLEAN VAL walls
+# so that only a set fraction of them would be flagged (the false-alarm rate).
+# The same cut-off is then applied unchanged to EVAL_ON, so test stays a fair score.
+FA_TARGETS = (0.01, 0.05, 0.10)   # false-alarm rates to report
+DETECT_FA = 0.05                  # the one used for the 'detected' column in the CSV
 
 # Ensemble: train N_MODELS U-Nets that differ only in their random seed (starting weights, batch order, flips, noise)
 # average their crack-probability maps.
 N_MODELS = 5
-MODEL_PATH = 'unet_unc_seed{}.pt'   # one file per seed
+MODEL_PATH = os.path.join(REPO_ROOT, 'unet_unc_seed{}.pt')   # one file per seed
 
 def load_runs(data_dir):
     """
@@ -57,7 +69,7 @@ def load_runs(data_dir):
                     phi in degrees [0, 180) = atan2(sin2phi, cos2phi) / 2.
     """
     images, has_crack, params, run_ids = [], [], [], []
-    for i in range(0, 401):                       # run_00000 .. run_00400
+    for i in range(0, 601):                       # run_00000 .. run_00600
         run_i = os.path.join(data_dir, f'run_{i:05d}.npz')
         if not os.path.exists(run_i):
             print(f'skipping missing {run_i}')
@@ -113,7 +125,7 @@ def preprocess(images, has_crack, idx_train):
     X = X.clamp(-1.0, 1.0)
     ch_mean = X[idx_train].mean(dim=(0, 2, 3), keepdim=True)    # (1, C, 1, 1): one per channel
     ch_std = X[idx_train].std(dim=(0, 2, 3), keepdim=True)
-    X = (X - ch_mean) / (ch_std + 1e-8) 
+    X = (X - ch_mean) / (ch_std + 1e-8)
     y = has_crack.float()
     return X, y
 
@@ -160,7 +172,7 @@ def draw_crack_mask(col, row, length_px, width_px, phi_px_rad, H=64, W=64):
     w_c = -d_col * np.sin(phi_px_rad) + d_row * np.cos(phi_px_rad)
     inside = (l_c.abs() <= length_px / 2) & (w_c.abs() <= width_px / 2) # (H, W) True/False
     return inside.float() # (H, W) 1.0 / 0.0
-    
+
 
 
 
@@ -200,7 +212,7 @@ def mask_to_params(prob, threshold=0.5):
     #rows, cols = torch.where(prob > threshold)    # integer indices of crack pixels
     if len(rows) == 0:
         return None
-    weights = prob[rows, cols]                   
+    weights = prob[rows, cols]
     rows, cols = rows.float(), cols.float()
     col = (weights * cols).sum() / weights.sum()  # weighted mean column
     row = (weights * rows).sum() / weights.sum()  # weighted mean row
@@ -214,14 +226,14 @@ def mask_to_params(prob, threshold=0.5):
                        torch.stack([c_cr, c_rr])])
     evals, evecs = torch.linalg.eigh(cov)   # eigenvalues sorted ascending
     e = evecs[:, 1]                          # eigenvector for the largest one = along the crack
-    phi = torch.atan2(e[1], e[0])            
-    u = d_col * torch.cos(phi) + d_row * torch.sin(phi)    
-    v = -d_col * torch.sin(phi) + d_row * torch.cos(phi)  
+    phi = torch.atan2(e[1], e[0])
+    u = d_col * torch.cos(phi) + d_row * torch.sin(phi)
+    v = -d_col * torch.sin(phi) + d_row * torch.cos(phi)
     length_px = torch.sqrt(12 * (weights * u**2).sum() / W + 1)
     width_px  = torch.sqrt(12 * (weights * v**2).sum() / W + 1)
     return col.item(), row.item(), length_px.item(), width_px.item(), phi.item()
 
-# 4. The U-Net                                                               
+# 4. The U-Net
 class DoubleConv(nn.Module):
     """
     (Conv 3x3 -> BatchNorm -> ReLU) twice. padding=1 so H and W don't change.
@@ -272,7 +284,7 @@ class UNet(nn.Module):
             skips.append(x)
             x = self.pool(x)
 
-        x = self.bottleneck(x)
+        x = self.bottleneck(x)                                                 # (B, 64, 8, 8)
 
         skips = skips[::-1]
         for idx in range(0, len(self.ups), 2):
@@ -283,7 +295,7 @@ class UNet(nn.Module):
         return self.final_conv(x)
 
 
-# 5. Losses                                                                   
+# 5. Losses
 def dice_loss(logits, target, smooth=1.0):
     """
     Dice overlap between sigmoid(logits) and target, averaged over the batch.
@@ -299,7 +311,7 @@ def dice_loss(logits, target, smooth=1.0):
 
 def total_loss(mask_logits, mask_true, cracked):
     """
-    BCE on every wall
+    BCE on every wall's mask
     Dice only where there is a crack
     """
     # crack pixels are ~1% of the image; pos_weight stops "predict nothing" being the easy answer
@@ -314,7 +326,7 @@ def total_loss(mask_logits, mask_true, cracked):
 
 
 
-# 6. Training and output                                                      
+# 6. Training and output
 def augment(x, mask):
     """
     8x data set for training
@@ -382,7 +394,7 @@ def predict_params(models, X, threshold=THRESHOLD, length_threshold=LENGTH_THRES
     Returns
         out    : (N, 4) array in PRED_NAMES order (x, y, length, phi).
                  NaN where no pixel passed the threshold.
-        scores : (N,) max(prob) per wall, a crack/no-crack score.
+        scores : (N,) max(prob) per wall: crack/no-crack score read off the mask.
     """
     for m in models:
         m.eval()
@@ -391,7 +403,9 @@ def predict_params(models, X, threshold=THRESHOLD, length_threshold=LENGTH_THRES
     with torch.no_grad():
         for start in range(0, len(X), batch_size):
             xb = X[start:start + batch_size].to(device)
-            probs = [torch.sigmoid(m(xb)[:, 0]) for m in models]   # each model's (B, H, W) guess
+            # .double(): in float32, sigmoid rounds any logit above ~17 to exactly 1.0, so strong
+            # cracks (and the worst false alarms) would all tie at 1.0 and no cut-off could separate them
+            probs = [torch.sigmoid(m(xb)[:, 0].double()) for m in models]   # each model's guess: (B, H, W)
             prob = torch.stack(probs).mean(dim=0).cpu()       # (n_models, B, H, W) -> (B, H, W): average vote
             for j in range(len(xb)):
                 i = start + j
@@ -407,6 +421,19 @@ def predict_params(models, X, threshold=THRESHOLD, length_threshold=LENGTH_THRES
     return out, scores
 
 
+def detection_cutoff(clean_scores, fa_target):
+    """
+    crack_score cut-off (rule: cracked if score > cut-off) that flags at most
+    fa_target of these clean walls. Sort the clean scores highest first; if we may
+    flag k = floor(fa_target * n) of them, the cut-off is the (k+1)-th highest score,
+    so exactly the k walls above it get flagged (fewer if scores tie).
+    With k = 0 the cut-off is the highest clean score: no clean wall is flagged.
+    """
+    s = np.sort(clean_scores)[::-1]                  # highest first
+    k = int(np.floor(fa_target * len(s)))
+    return s[k]
+
+
 def main():
     """
     load_runs -> split_indices -> preprocess -> build_masks
@@ -419,6 +446,11 @@ def main():
     idx_train, idx_val, idx_test = split_indices(has_crack)
     X, _ = preprocess(images, has_crack, idx_train)
     masks = build_masks(params, has_crack, H, W)
+    n_px = masks[:, 0].sum(dim=(1, 2))                     # crack pixels in view, per wall
+    for name, idx in [('train', idx_train), ('val', idx_val), ('test', idx_test)]:
+        c = idx[has_crack[idx]]
+        print(f'{name}: {int((n_px[c] == 0).sum())} cracked walls with no crack in view, '
+              f'{int((n_px[c] < 10).sum())} with fewer than 10 crack pixels')
     cracked_train = idx_train[has_crack[idx_train]]
     diffs = []
     for i in cracked_train:
@@ -449,7 +481,7 @@ def main():
             for epoch in range(num_epochs):
                 train_loss, tr = train_one_epoch(model, train_loader, optimizer)
                 val_loss, va = evaluate(model, val_loader)
-                if val_loss < best_val:                  # val_loss is now just bce + dice
+                if val_loss < best_val:                  # val_loss = bce + dice
                     best_val, best_epoch = val_loss, epoch
                     best_state = {k: v.detach().clone() for k, v in model.state_dict().items()}
 
@@ -497,12 +529,32 @@ def main():
           f'bias {np.nanmean(d):+.2f} cm (perfect network ceiling)')
 
     from sklearn.metrics import roc_auc_score
-    print(f'crack/no-crack AUC from max(prob) on {EVAL_ON}:',
-          round(roc_auc_score(has_crack[eval_idx].numpy(), scores[eval_idx]), 3))
+    y_eval = has_crack[eval_idx].numpy()
+    print(f'crack/no-crack AUC on {EVAL_ON} (max(prob)): {roc_auc_score(y_eval, scores[eval_idx]):.3f}')
 
+    # Detection: found cracks AND false alarms, first with the old 0.5 rule, then with
+    # cut-offs chosen on the clean val walls for a set false-alarm rate.
+    has_np, val_np = has_crack.numpy(), idx_val.numpy()
+    eval_clean = eval_idx[~has_np[eval_idx]]
+    val_clean = val_np[~has_np[val_np]]
+    print(f'\ndetection on {EVAL_ON}: {len(eval_cracked)} cracked, {len(eval_clean)} clean walls')
+    print(f'  max(prob) > {THRESHOLD} (old rule): found {(scores[eval_cracked] > THRESHOLD).sum()}'
+          f'/{len(eval_cracked)} cracks, false alarms {(scores[eval_clean] > THRESHOLD).sum()}'
+          f'/{len(eval_clean)} clean walls')
+    print(f'  cut-offs chosen on the {len(val_clean)} clean VAL walls:')
+    for fa in FA_TARGETS:
+        t = detection_cutoff(scores[val_clean], fa)
+        found = (scores[eval_cracked] > t).sum()
+        false_alarms = (scores[eval_clean] > t).sum()
+        print(f'    allow {fa:4.0%} false alarms: cut-off {t:.4f}  ->  found {found}/{len(eval_cracked)} '
+              f'({found / len(eval_cracked):.0%}), false alarms {false_alarms}/{len(eval_clean)} '
+              f'({false_alarms / len(eval_clean):.0%})')
+
+    detect_cut = detection_cutoff(scores[val_clean], DETECT_FA)
     df = pd.DataFrame(pred, columns=PRED_NAMES)          # x, y, length, phi
     df.insert(0, 'run_id', run_ids)
-    df.insert(1, 'crack_score', scores)
+    df.insert(1, 'crack_score', scores)                  # max(prob) off the mask
+    df.insert(2, 'detected', scores > detect_cut)        # crack_score above the DETECT_FA cut-off
     df.to_csv(out_csv, index=False)
     print('wrote', out_csv)
 

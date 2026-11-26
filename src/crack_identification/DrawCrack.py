@@ -238,8 +238,8 @@ def print_report(result, truth=None):
         print(row + f'  {unit[n]}')
 
 
-MEASUREMENT_FILE = os.path.join(data_dir, 'measurement.npz')   # data_dir comes from DATA_DIR
-OUT_PNG = 'crack_prediction.png'
+MEASUREMENT_FILE = os.path.join(data_dir, 'measurement5.npz')   # data_dir comes from DATA_DIR
+OUT_PNG = 'crack_prediction5.png'
 
 def main():
     image = load_measurement(MEASUREMENT_FILE)
