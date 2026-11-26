@@ -135,16 +135,46 @@ Every increase helped measurement. Each row has a different test split, so the A
 
 **Earlier approach.** A whole-image CNN classifier, scored with 5-fold cross-validation on about 250 walls, reached AUC 0.827. A simple brightest-pixel rule reached 0.832, so the two were tied. The classifier found 60.5% of cracks at a 0.8% false-alarm rate. The U-Net detects at a similar rate. Its added value is that it measures the crack as well as finding it.
 
-### 3.4 Newly generated walls
+### 3.4 Example predictions on newly simulated walls
 
-Three new walls were simulated with seeds not used for any training run. All three were clean:
+Each figure shows one wall in three panels:
 
-- **Two were correctly rejected:** crack scores 0.11 and 0.24.
-- **One was a confident false alarm:** score 0.99, all five models agreeing, with a tight spread in position (±0.4 cm).
+- **Left:** the input, peak-window flux relative to an average clean wall (standardised).
+- **Middle:** the ensemble's mean crack probability. The solid outline marks 0.5, the region used for centre and angle. The dotted outline marks 0.25, used for length.
+- **Right:** how much the five models disagree, as the standard deviation of their probabilities.
 
-Three walls is too few to estimate a rate. The false alarm does show that the ensemble's spread can't be relied on to flag a wrong answer.
+The lines are the crack each model measures on its own (thin orange), the ensemble's crack (thick pink) and, where the wall has one, the true crack (dashed). The ± values in each title are the spread across the five models.
 
-Two earlier "new" walls were excluded. They had been simulated with the same random seed as training wall `run_00001`, so their noise was largely a copy of that wall's.
+Five new walls were simulated with seeds not used for any training run: one cracked and four clean. Figures 1–4 show four of them. The fifth, a clean wall, was correctly rejected with a crack score of 0.11.
+
+![Figure 1](src/crack_identification/Results/crack_prediction3.png)
+
+**Figure 1 – cracked wall.** Crack score 0.999, and all five models find a crack.
+
+| | Predicted | True | Error |
+|---|---|---|---|
+| x | 4.70 ± 0.80 cm | 4.56 cm | +0.13 cm |
+| y | −7.45 ± 1.90 cm | −8.55 cm | +1.10 cm |
+| angle | 49.8 ± 10.9° | 45.3° | +4.5° |
+| length | 20.1 ± 1.6 cm | 11.4 cm | **+8.7 cm** |
+
+Centre and angle are well within the test-set average errors, but the length is badly overestimated. The high-probability region runs about 4 cm past each end of the true crack, even at 0.5. The models agree on the wrong length, so the spread (±1.6 cm) gives no warning. The crack can't be seen by eye in the input (left), yet the network finds it.
+
+![Figure 2](src/crack_identification/Results/crack_prediction5.png)
+
+**Figure 2 – clean wall, correctly rejected.** Crack score 0.24, well below every cut-off. One of the five models finds a short crack near (9, 11) cm (the thin orange line). The other four don't, so the averaged probability stays low. This is the ensemble doing its job: one model's mistake is outvoted.
+
+![Figure 3](src/crack_identification/Results/crack_prediction1.png)
+
+**Figure 3 – clean wall, false alarm.** Crack score 0.99, with all five models placing a crack at (11.8, −0.8) cm with a tight spread (±0.4 cm in x, ±0.5 cm in y). The wall has no crack, but the score is above even the 1% cut-off (0.960), so no cut-off chosen on validation would have rejected it. Weaker, scattered regions elsewhere on the map show how readily the inflated probabilities respond to noise (section 4.2). A small spread does not mean the answer is right.
+
+![Figure 4](src/crack_identification/Results/crack_prediction2.png)
+
+**Figure 4 – clean wall, false alarm.** Crack score 0.93, just above the 5% cut-off (0.913). Here the models do disagree: angle ±22.6° and length ±4.7 cm, with the single-model lines pointing in clearly different directions, and the high-probability region is a blob rather than a line.
+
+Across the five new walls, the one crack was found, with a good centre and angle but too long a length. Of the four clean walls, two were rejected and two were flagged as cracked at the 5% cut-off, one of them above every cut-off. Five walls are too few to estimate rates, but they show two things:
+- **The ensemble's spread sometimes flags an unreliable answer** (Figure 4) **and sometimes doesn't** (Figures 1 and 3).
+- **Confident false alarms happen on unseen walls** (Figures 3 and 4). That fits the inflated probabilities in section 4.2.
 
 ## 4. Limitations and flaws
 
@@ -202,7 +232,7 @@ Depth isn't measured: a dedicated network head never beat guessing the average. 
 
 ### 4.7 Data-handling issues found during testing
 
-- **Seed reuse.** Reusing a training run's seed makes a "new" wall largely a copy of that training wall, because OpenMC follows the same particle paths wherever the geometry matches. Walls made this way were excluded (3.4).
+- **Seed reuse.** Reusing a training run's seed makes a "new" wall largely a copy of that training wall, because OpenMC follows the same particle paths wherever the geometry matches. The new walls in section 3.4 all use seeds that no training run used.
 - **Overwrite risk.** The generator's default starting run number (501) would overwrite existing training files if run again. Neither issue affected the dataset used here: the test results reproduced exactly when re-run.
 
 ## 5. Future work
@@ -215,18 +245,3 @@ Depth isn't measured: a dedicated network head never beat guessing the average. 
 6. **Use a realistic detector response** (energy resolution, efficiency, scanning), dropping the uncollided channel or replacing it with something measurable.
 7. **Estimate depth** from the strength of the crack's signal in the transmitted flux, instead of a learned head.
 
-## 6. Reproducing the results
-
-| File | Purpose |
-|---|---|
-| Data generator (original version) | Simulates the walls into `data/run_XXXXX.npz` |
-| `unet.py` | Trains or loads the ensemble, prints all results above, writes `crack_params_unet.csv` |
-| `unet_unc_seed0.pt` – `unet_unc_seed4.pt` | The five trained models |
-| `DrawCrack.py` | Plots one wall's prediction, uncertainty and true crack |
-| `plot_check.py` | Plots one wall's flux maps (and its geometry, if its run folder exists) |
-
-To reproduce:
-
-1. In `unet.py`, set `TRAIN = False`.
-2. Run it with `EVAL_ON = 'val'` for the validation results.
-3. Run it again with `EVAL_ON = 'test'` for the test results.
